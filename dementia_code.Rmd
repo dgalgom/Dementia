@@ -1,0 +1,867 @@
+---
+title: "Dementia Data Analysis"
+author: "Daniel Gallardo-Gómez."
+date: '2024-03-11'
+output: html_document
+---
+
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+# required libraries
+library(tidyverse) # run the two following packages if any problem is found here
+library(dplyr) # data wrangling
+library(ggplot2) # data plotting and visualisation
+library(msm) # multi-state modeling 
+library(msm.stacked) # transition probabilities plots
+library(elect) # life expectancy estimation
+library(ggthemes) # data customisation
+library(ggsci) # data customisation
+```
+
+
+### Importing data
+
+Clean dataset from NHATS allowing only forward transitions.
+
+```{r}
+data <- readRDS("NHATS_data.Rda")
+```
+
+
+## Data modeling: multi-state survival model
+
+Model including all explored covariates: `age`, `sppb10`, `sex`, `exercise`, `income2`, and `smk_before`. You could rerun the model, or simply import the model from the corresponding repository to save time (<https://github.com/dgalgom/Dementia>), since it is a computationally intense process.
+
+```{r, warning=FALSE, eval=FALSE}
+# Specifying a model
+## A model is ruled by a transition intensity matrix *Q*
+## In our example, there are four possible states through which older adults can move
+## Dementia-free, MCI, dementia, and death
+## Firstly, we assume that the patient can only advance from states while alive, and die from any state
+Q <- rbind(c(0, 0.1, 0.1, 0.1),
+           c(0, 0, 0.1, 0.1),
+           c(0, 0, 0, 0.1),
+           c(0, 0, 0, 0))
+
+# Fitting the model into msm
+model <- msm(state ~ age, 
+                    subject = id, 
+                    data = data,
+                    covariates = ~ age + sppb.sens +
+                      sex + exercise + income2 + smk_before,
+                    qmatrix = Q, 
+                    deathexact = 4, 
+                    control = list(fnscale = 10000,
+                                   maxit = 1000,
+                                   trace = 1,
+                                   REPORT = 1,
+                                   reltol = 1e-8),
+                    center = FALSE,
+                    death = TRUE)
+```
+
+```{r}
+# importing model from repository
+model <- readRDS("model_msm.Rda")
+```
+
+
+Summary of our model: observe hazard ratios for the selected covariates.
+
+```{r, collapse=TRUE}
+model
+```
+
+
+Stacked transition probabilities for older adults aged the mean age of individuals in the NHATS (mean age = `r round(mean(data$age, na.rm = TRUE) + 80.5522656302653, 2)`, SD = `r round(sd(data$age, na.rm = TRUE), 2)`) over 10 years having good and poor physical function.
+
+```{r, collapse=TRUE}
+# older men with poor physical function plot 
+stacked.plot.msm(model = model, tstart = 0, tforward = 10,
+                 covariates = list(age = 0,
+                                   sppb10 = 0,
+                                   sex = 1,
+                                   income2 = 0.5,
+                                   exercise = 0.5,
+                                   smk_before = 0.5),
+                 exclude = "State 4") +
+  scale_x_continuous(breaks = seq(0, 10, 2)) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  scale_fill_viridis_d(option = "plasma") +
+  labs(fill = "To:",
+       title = "Older men with poor physical function") 
+
+# older men with good physical function plot
+stacked.plot.msm(model = model, tstart = 0, tforward = 10,
+                          covariates = list(age = 0,
+                                            sppb10 = 1,
+                                            sex = 1,
+                                            income2 = 0.5,
+                                            exercise = 0.5,
+                                            smk_before = 0.5),
+                          exclude = "State 4") +
+  scale_x_continuous(breaks = seq(0, 10, 2)) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  scale_fill_viridis_d(option = "plasma") +
+  labs(fill = "To:",
+       title = "Older men with good physical function") 
+
+# older women with poor physical function plot
+stacked.plot.msm(model = model, tstart = 0, tforward = 10,
+                          covariates = list(age = 0,
+                                            sppb10 = 0,
+                                            sex = 2,
+                                            income2 = 0.5,
+                                            exercise = 0.5,
+                                            smk_before = 0.5),
+                          exclude = "State 4") +
+  scale_x_continuous(breaks = seq(0, 10, 2)) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  scale_fill_viridis_d(option = "plasma") +
+  labs(fill = "To:",
+       title = "Older women with poor physical function") 
+
+# older women with good physical function plot
+stacked.plot.msm(model = model, tstart = 0, tforward = 10,
+                          covariates = list(age = 0,
+                                            sppb10 = 1,
+                                            sex = 2,
+                                            income2 = 0.5,
+                                            exercise = 0.5,
+                                            smk_before = 0.5),
+                          exclude = "State 4") +
+  scale_x_continuous(breaks = seq(0, 10, 2)) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  scale_fill_viridis_d(option = "plasma") +
+  labs(fill = "To:",
+       title = "Older women with good physical function") 
+```
+
+
+## Life expectancy estimates
+
+Life expectancy in a specified state is defined as the expected remaining number of years in that state and is conditional on current state and age.
+
+For these estimates across lifespan, a loop was created to gather all life expectancy information corresponding to **total life expectancy**, **marginal life expectancy estimates** (from the total LE, how much time would you spend in the different states without taking into account the current state), and **state-specific life expectancy estimates**.
+
+```{r}
+# first, create an empty list where all the information will be contained
+LE_summary <- list()
+
+# loop to calculate LE estimates for each age point for a specific combination of covariates
+for (i in seq(-15.55227, 24.44773, 1)) { # from 65 to 105 years old
+  LE_summary[[i+16.55227]] <- elect(model, 
+                      b.covariates = list(age = i,
+                                          sppb10 = 0, # 0: poor physical function; 1: good physical function
+                                          sex = 1, # 1: men; 2: women
+                                          income2 = 0.5, # the rest of covariates were adjusted to mean values
+                                          exercise = 0.5,
+                                          smk_before = 0.5),
+                      statedistdata = sddata, 
+                      time.scale.msm = "years",
+                      h = 0.5, 
+                      age.max = age.max, 
+                      S = 100, # number of simulations to compute uncertainty 
+                      setseed = 2012024)
+}
+```
+
+
+We advice save this information corresponding with a specific combination of covariates in an object that could be used next. For example:
+
+```{r, eval=FALSE, collapse=TRUE}
+# Imagine that we estimated the LE for older men with poor physical function
+mod_sum_males_poor <- LE_summary
+# mod_sum_males_good <- LE_summary
+# mod_sum_females_poor <- LE_summary
+# mod_sum_females_good <- LE_summary
+
+# which information can we find in this object?
+# for example, if we want to know the LE estimates for olde men aged 65 and with poor physical function
+summary.elect(mod_sum_males_poor[[1]])
+
+# e11 is the remaining number of years in dementia-free state for older adults free of any cognitive condition
+# e12 is the remaining number of years living with MCI for older adults living free of any cognitive condition
+# e13 is the remaining number of years living with dementia for older adults living free of any cognitive condition
+# e22 is the remaining number of years living with MCI for older adults with MCI
+# e23 is the remaining number of years living with dementia for older adults with MCI
+# e33 is the remaining number of years living with dementia for older adults with dementia
+# e1 is the expected number of years free of dementia based on the total LE
+# e2 is the expected number of years living with MCI based on the total LE
+# e3 is the expected number of years with dementia based on the total LE
+# e is the total life expectancy 
+```
+
+
+Extracting data for each of the states (dementia-free, MCI, and dementia). In this case, we extract marginal LEs. 
+
+```{r}
+# Data for dementia-free state
+free.data <- data.frame(sex = rep(c("Women", "Men"), each = 200, times = 41),
+           pp = rep(c("Good Physical Function", "Poor Physical Function"), each = 100, times = 82),
+           year = rep(seq(65, 105), each = 400),
+           type = "Dementia-free",
+           value = c(mod_sum_females_good[[1]]$sim[, 10],
+                         mod_sum_females_poor[[1]]$sim[, 10],
+                         mod_sum_males_good[[1]]$sim[, 10],
+                         mod_sum_males_poor[[1]]$sim[, 10],
+                     mod_sum_females_good[[2]]$sim[, 10],
+                     mod_sum_females_poor[[2]]$sim[, 10],
+                     mod_sum_males_good[[2]]$sim[, 10],
+                     mod_sum_males_poor[[2]]$sim[, 10],
+                     mod_sum_females_good[[3]]$sim[, 10],
+                     mod_sum_females_poor[[3]]$sim[, 10],
+                     mod_sum_males_good[[3]]$sim[, 10],
+                     mod_sum_males_poor[[3]]$sim[, 10],
+                     mod_sum_females_good[[4]]$sim[, 10],
+                     mod_sum_females_poor[[4]]$sim[, 10],
+                     mod_sum_males_good[[4]]$sim[, 10],
+                     mod_sum_males_poor[[4]]$sim[, 10],
+                     mod_sum_females_good[[5]]$sim[, 10],
+                     mod_sum_females_poor[[5]]$sim[, 10],
+                     mod_sum_males_good[[5]]$sim[, 10],
+                     mod_sum_males_poor[[5]]$sim[, 10],
+                     mod_sum_females_good[[6]]$sim[, 10],
+                     mod_sum_females_poor[[6]]$sim[, 10],
+                     mod_sum_males_good[[6]]$sim[, 10],
+                     mod_sum_males_poor[[6]]$sim[, 10],
+                     mod_sum_females_good[[7]]$sim[, 10],
+                     mod_sum_females_poor[[7]]$sim[, 10],
+                     mod_sum_males_good[[7]]$sim[, 10],
+                     mod_sum_males_poor[[7]]$sim[, 10],
+                     mod_sum_females_good[[8]]$sim[, 10],
+                     mod_sum_females_poor[[8]]$sim[, 10],
+                     mod_sum_males_good[[8]]$sim[, 10],
+                     mod_sum_males_poor[[8]]$sim[, 10],
+                     mod_sum_females_good[[9]]$sim[, 10],
+                     mod_sum_females_poor[[9]]$sim[, 10],
+                     mod_sum_males_good[[9]]$sim[, 10],
+                     mod_sum_males_poor[[9]]$sim[, 10],
+                     mod_sum_females_good[[10]]$sim[, 10],
+                     mod_sum_females_poor[[10]]$sim[, 10],
+                     mod_sum_males_good[[10]]$sim[, 10],
+                     mod_sum_males_poor[[10]]$sim[, 10],
+                     mod_sum_females_good[[11]]$sim[, 10],
+                     mod_sum_females_poor[[11]]$sim[, 10],
+                     mod_sum_males_good[[11]]$sim[, 10],
+                     mod_sum_males_poor[[11]]$sim[, 10],
+                     mod_sum_females_good[[12]]$sim[, 10],
+                     mod_sum_females_poor[[12]]$sim[, 10],
+                     mod_sum_males_good[[12]]$sim[, 10],
+                     mod_sum_males_poor[[12]]$sim[, 10],
+                     mod_sum_females_good[[13]]$sim[, 10],
+                     mod_sum_females_poor[[13]]$sim[, 10],
+                     mod_sum_males_good[[13]]$sim[, 10],
+                     mod_sum_males_poor[[13]]$sim[, 10],
+                     mod_sum_females_good[[14]]$sim[, 10],
+                     mod_sum_females_poor[[14]]$sim[, 10],
+                     mod_sum_males_good[[14]]$sim[, 10],
+                     mod_sum_males_poor[[14]]$sim[, 10],
+                     mod_sum_females_good[[15]]$sim[, 10],
+                     mod_sum_females_poor[[15]]$sim[, 10],
+                     mod_sum_males_good[[15]]$sim[, 10],
+                     mod_sum_males_poor[[15]]$sim[, 10],
+                     mod_sum_females_good[[16]]$sim[, 10],
+                     mod_sum_females_poor[[16]]$sim[, 10],
+                     mod_sum_males_good[[16]]$sim[, 10],
+                     mod_sum_males_poor[[16]]$sim[, 10],
+                     mod_sum_females_good[[17]]$sim[, 10],
+                     mod_sum_females_poor[[17]]$sim[, 10],
+                     mod_sum_males_good[[17]]$sim[, 10],
+                     mod_sum_males_poor[[17]]$sim[, 10],
+                     mod_sum_females_good[[18]]$sim[, 10],
+                     mod_sum_females_poor[[18]]$sim[, 10],
+                     mod_sum_males_good[[18]]$sim[, 10],
+                     mod_sum_males_poor[[18]]$sim[, 10],
+                     mod_sum_females_good[[19]]$sim[, 10],
+                     mod_sum_females_poor[[19]]$sim[, 10],
+                     mod_sum_males_good[[19]]$sim[, 10],
+                     mod_sum_males_poor[[19]]$sim[, 10],
+                     mod_sum_females_good[[20]]$sim[, 10],
+                     mod_sum_females_poor[[20]]$sim[, 10],
+                     mod_sum_males_good[[20]]$sim[, 10],
+                     mod_sum_males_poor[[20]]$sim[, 10],
+                     mod_sum_females_good[[21]]$sim[, 10],
+                     mod_sum_females_poor[[21]]$sim[, 10],
+                     mod_sum_males_good[[21]]$sim[, 10],
+                     mod_sum_males_poor[[21]]$sim[, 10],
+                     mod_sum_females_good[[22]]$sim[, 10],
+                     mod_sum_females_poor[[22]]$sim[, 10],
+                     mod_sum_males_good[[22]]$sim[, 10],
+                     mod_sum_males_poor[[22]]$sim[, 10],
+                     mod_sum_females_good[[23]]$sim[, 10],
+                     mod_sum_females_poor[[23]]$sim[, 10],
+                     mod_sum_males_good[[23]]$sim[, 10],
+                     mod_sum_males_poor[[23]]$sim[, 10],
+                     mod_sum_females_good[[24]]$sim[, 10],
+                     mod_sum_females_poor[[24]]$sim[, 10],
+                     mod_sum_males_good[[24]]$sim[, 10],
+                     mod_sum_males_poor[[24]]$sim[, 10],
+                     mod_sum_females_good[[25]]$sim[, 10],
+                     mod_sum_females_poor[[25]]$sim[, 10],
+                     mod_sum_males_good[[25]]$sim[, 10],
+                     mod_sum_males_poor[[25]]$sim[, 10],
+                     mod_sum_females_good[[26]]$sim[, 10],
+                     mod_sum_females_poor[[26]]$sim[, 10],
+                     mod_sum_males_good[[26]]$sim[, 10],
+                     mod_sum_males_poor[[26]]$sim[, 10],
+                     mod_sum_females_good[[27]]$sim[, 10],
+                     mod_sum_females_poor[[27]]$sim[, 10],
+                     mod_sum_males_good[[27]]$sim[, 10],
+                     mod_sum_males_poor[[27]]$sim[, 10],
+                     mod_sum_females_good[[28]]$sim[, 10],
+                     mod_sum_females_poor[[28]]$sim[, 10],
+                     mod_sum_males_good[[28]]$sim[, 10],
+                     mod_sum_males_poor[[28]]$sim[, 10],
+                     mod_sum_females_good[[29]]$sim[, 10],
+                     mod_sum_females_poor[[29]]$sim[, 10],
+                     mod_sum_males_good[[29]]$sim[, 10],
+                     mod_sum_males_poor[[29]]$sim[, 10],
+                     mod_sum_females_good[[30]]$sim[, 10],
+                     mod_sum_females_poor[[30]]$sim[, 10],
+                     mod_sum_males_good[[30]]$sim[, 10],
+                     mod_sum_males_poor[[30]]$sim[, 10],
+                     mod_sum_females_good[[31]]$sim[, 10],
+                     mod_sum_females_poor[[31]]$sim[, 10],
+                     mod_sum_males_good[[31]]$sim[, 10],
+                     mod_sum_males_poor[[31]]$sim[, 10],
+                     mod_sum_females_good[[32]]$sim[, 10],
+                     mod_sum_females_poor[[32]]$sim[, 10],
+                     mod_sum_males_good[[32]]$sim[, 10],
+                     mod_sum_males_poor[[32]]$sim[, 10],
+                     mod_sum_females_good[[33]]$sim[, 10],
+                     mod_sum_females_poor[[33]]$sim[, 10],
+                     mod_sum_males_good[[33]]$sim[, 10],
+                     mod_sum_males_poor[[33]]$sim[, 10],
+                     mod_sum_females_good[[34]]$sim[, 10],
+                     mod_sum_females_poor[[34]]$sim[, 10],
+                     mod_sum_males_good[[34]]$sim[, 10],
+                     mod_sum_males_poor[[34]]$sim[, 10],
+                     mod_sum_females_good[[35]]$sim[, 10],
+                     mod_sum_females_poor[[35]]$sim[, 10],
+                     mod_sum_males_good[[35]]$sim[, 10],
+                     mod_sum_males_poor[[35]]$sim[, 10],
+                     mod_sum_females_good[[36]]$sim[, 10],
+                     mod_sum_females_poor[[36]]$sim[, 10],
+                     mod_sum_males_good[[36]]$sim[, 10],
+                     mod_sum_males_poor[[36]]$sim[, 10],
+                     mod_sum_females_good[[37]]$sim[, 10],
+                     mod_sum_females_poor[[37]]$sim[, 10],
+                     mod_sum_males_good[[37]]$sim[, 10],
+                     mod_sum_males_poor[[37]]$sim[, 10],
+                     mod_sum_females_good[[38]]$sim[, 10],
+                     mod_sum_females_poor[[38]]$sim[, 10],
+                     mod_sum_males_good[[38]]$sim[, 10],
+                     mod_sum_males_poor[[38]]$sim[, 10],
+                     mod_sum_females_good[[39]]$sim[, 10],
+                     mod_sum_females_poor[[39]]$sim[, 10],
+                     mod_sum_males_good[[39]]$sim[, 10],
+                     mod_sum_males_poor[[39]]$sim[, 10],
+                     mod_sum_females_good[[40]]$sim[, 10],
+                     mod_sum_females_poor[[40]]$sim[, 10],
+                     mod_sum_males_good[[40]]$sim[, 10],
+                     mod_sum_males_poor[[40]]$sim[, 10],
+                     mod_sum_females_good[[41]]$sim[, 10],
+                     mod_sum_females_poor[[41]]$sim[, 10],
+                     mod_sum_males_good[[41]]$sim[, 10],
+                     mod_sum_males_poor[[41]]$sim[, 10]))
+
+
+# Data for MCI state
+mci.data <- data.frame(sex = rep(c("Women", "Men"), each = 200, times = 41),
+                        pp = rep(c("Good Physical Function", "Poor Physical Function"), each = 100, times = 82),
+                        year = rep(seq(65, 105), each = 400),
+                        type = "MCI",
+                        value = c(mod_sum_females_good[[1]]$sim[, 11],
+                                  mod_sum_females_poor[[1]]$sim[, 11],
+                                  mod_sum_males_good[[1]]$sim[, 11],
+                                  mod_sum_males_poor[[1]]$sim[, 11],
+                                  mod_sum_females_good[[2]]$sim[, 11],
+                                  mod_sum_females_poor[[2]]$sim[, 11],
+                                  mod_sum_males_good[[2]]$sim[, 11],
+                                  mod_sum_males_poor[[2]]$sim[, 11],
+                                  mod_sum_females_good[[3]]$sim[, 11],
+                                  mod_sum_females_poor[[3]]$sim[, 11],
+                                  mod_sum_males_good[[3]]$sim[, 11],
+                                  mod_sum_males_poor[[3]]$sim[, 11],
+                                  mod_sum_females_good[[4]]$sim[, 11],
+                                  mod_sum_females_poor[[4]]$sim[, 11],
+                                  mod_sum_males_good[[4]]$sim[, 11],
+                                  mod_sum_males_poor[[4]]$sim[, 11],
+                                  mod_sum_females_good[[5]]$sim[, 11],
+                                  mod_sum_females_poor[[5]]$sim[, 11],
+                                  mod_sum_males_good[[5]]$sim[, 11],
+                                  mod_sum_males_poor[[5]]$sim[, 11],
+                                  mod_sum_females_good[[6]]$sim[, 11],
+                                  mod_sum_females_poor[[6]]$sim[, 11],
+                                  mod_sum_males_good[[6]]$sim[, 11],
+                                  mod_sum_males_poor[[6]]$sim[, 11],
+                                  mod_sum_females_good[[7]]$sim[, 11],
+                                  mod_sum_females_poor[[7]]$sim[, 11],
+                                  mod_sum_males_good[[7]]$sim[, 11],
+                                  mod_sum_males_poor[[7]]$sim[, 11],
+                                  mod_sum_females_good[[8]]$sim[, 11],
+                                  mod_sum_females_poor[[8]]$sim[, 11],
+                                  mod_sum_males_good[[8]]$sim[, 11],
+                                  mod_sum_males_poor[[8]]$sim[, 11],
+                                  mod_sum_females_good[[9]]$sim[, 11],
+                                  mod_sum_females_poor[[9]]$sim[, 11],
+                                  mod_sum_males_good[[9]]$sim[, 11],
+                                  mod_sum_males_poor[[9]]$sim[, 11],
+                                  mod_sum_females_good[[10]]$sim[, 11],
+                                  mod_sum_females_poor[[10]]$sim[, 11],
+                                  mod_sum_males_good[[10]]$sim[, 11],
+                                  mod_sum_males_poor[[10]]$sim[, 11],
+                                  mod_sum_females_good[[11]]$sim[, 11],
+                                  mod_sum_females_poor[[11]]$sim[, 11],
+                                  mod_sum_males_good[[11]]$sim[, 11],
+                                  mod_sum_males_poor[[11]]$sim[, 11],
+                                  mod_sum_females_good[[12]]$sim[, 11],
+                                  mod_sum_females_poor[[12]]$sim[, 11],
+                                  mod_sum_males_good[[12]]$sim[, 11],
+                                  mod_sum_males_poor[[12]]$sim[, 11],
+                                  mod_sum_females_good[[13]]$sim[, 11],
+                                  mod_sum_females_poor[[13]]$sim[, 11],
+                                  mod_sum_males_good[[13]]$sim[, 11],
+                                  mod_sum_males_poor[[13]]$sim[, 11],
+                                  mod_sum_females_good[[14]]$sim[, 11],
+                                  mod_sum_females_poor[[14]]$sim[, 11],
+                                  mod_sum_males_good[[14]]$sim[, 11],
+                                  mod_sum_males_poor[[14]]$sim[, 11],
+                                  mod_sum_females_good[[15]]$sim[, 11],
+                                  mod_sum_females_poor[[15]]$sim[, 11],
+                                  mod_sum_males_good[[15]]$sim[, 11],
+                                  mod_sum_males_poor[[15]]$sim[, 11],
+                                  mod_sum_females_good[[16]]$sim[, 11],
+                                  mod_sum_females_poor[[16]]$sim[, 11],
+                                  mod_sum_males_good[[16]]$sim[, 11],
+                                  mod_sum_males_poor[[16]]$sim[, 11],
+                                  mod_sum_females_good[[17]]$sim[, 11],
+                                  mod_sum_females_poor[[17]]$sim[, 11],
+                                  mod_sum_males_good[[17]]$sim[, 11],
+                                  mod_sum_males_poor[[17]]$sim[, 11],
+                                  mod_sum_females_good[[18]]$sim[, 11],
+                                  mod_sum_females_poor[[18]]$sim[, 11],
+                                  mod_sum_males_good[[18]]$sim[, 11],
+                                  mod_sum_males_poor[[18]]$sim[, 11],
+                                  mod_sum_females_good[[19]]$sim[, 11],
+                                  mod_sum_females_poor[[19]]$sim[, 11],
+                                  mod_sum_males_good[[19]]$sim[, 11],
+                                  mod_sum_males_poor[[19]]$sim[, 11],
+                                  mod_sum_females_good[[20]]$sim[, 11],
+                                  mod_sum_females_poor[[20]]$sim[, 11],
+                                  mod_sum_males_good[[20]]$sim[, 11],
+                                  mod_sum_males_poor[[20]]$sim[, 11],
+                                  mod_sum_females_good[[21]]$sim[, 11],
+                                  mod_sum_females_poor[[21]]$sim[, 11],
+                                  mod_sum_males_good[[21]]$sim[, 11],
+                                  mod_sum_males_poor[[21]]$sim[, 11],
+                                  mod_sum_females_good[[22]]$sim[, 11],
+                                  mod_sum_females_poor[[22]]$sim[, 11],
+                                  mod_sum_males_good[[22]]$sim[, 11],
+                                  mod_sum_males_poor[[22]]$sim[, 11],
+                                  mod_sum_females_good[[23]]$sim[, 11],
+                                  mod_sum_females_poor[[23]]$sim[, 11],
+                                  mod_sum_males_good[[23]]$sim[, 11],
+                                  mod_sum_males_poor[[23]]$sim[, 11],
+                                  mod_sum_females_good[[24]]$sim[, 11],
+                                  mod_sum_females_poor[[24]]$sim[, 11],
+                                  mod_sum_males_good[[24]]$sim[, 11],
+                                  mod_sum_males_poor[[24]]$sim[, 11],
+                                  mod_sum_females_good[[25]]$sim[, 11],
+                                  mod_sum_females_poor[[25]]$sim[, 11],
+                                  mod_sum_males_good[[25]]$sim[, 11],
+                                  mod_sum_males_poor[[25]]$sim[, 11],
+                                  mod_sum_females_good[[26]]$sim[, 11],
+                                  mod_sum_females_poor[[26]]$sim[, 11],
+                                  mod_sum_males_good[[26]]$sim[, 11],
+                                  mod_sum_males_poor[[26]]$sim[, 11],
+                                  mod_sum_females_good[[27]]$sim[, 11],
+                                  mod_sum_females_poor[[27]]$sim[, 11],
+                                  mod_sum_males_good[[27]]$sim[, 11],
+                                  mod_sum_males_poor[[27]]$sim[, 11],
+                                  mod_sum_females_good[[28]]$sim[, 11],
+                                  mod_sum_females_poor[[28]]$sim[, 11],
+                                  mod_sum_males_good[[28]]$sim[, 11],
+                                  mod_sum_males_poor[[28]]$sim[, 11],
+                                  mod_sum_females_good[[29]]$sim[, 11],
+                                  mod_sum_females_poor[[29]]$sim[, 11],
+                                  mod_sum_males_good[[29]]$sim[, 11],
+                                  mod_sum_males_poor[[29]]$sim[, 11],
+                                  mod_sum_females_good[[30]]$sim[, 11],
+                                  mod_sum_females_poor[[30]]$sim[, 11],
+                                  mod_sum_males_good[[30]]$sim[, 11],
+                                  mod_sum_males_poor[[30]]$sim[, 11],
+                                  mod_sum_females_good[[31]]$sim[, 11],
+                                  mod_sum_females_poor[[31]]$sim[, 11],
+                                  mod_sum_males_good[[31]]$sim[, 11],
+                                  mod_sum_males_poor[[31]]$sim[, 11],
+                                  mod_sum_females_good[[32]]$sim[, 11],
+                                  mod_sum_females_poor[[32]]$sim[, 11],
+                                  mod_sum_males_good[[32]]$sim[, 11],
+                                  mod_sum_males_poor[[32]]$sim[, 11],
+                                  mod_sum_females_good[[33]]$sim[, 11],
+                                  mod_sum_females_poor[[33]]$sim[, 11],
+                                  mod_sum_males_good[[33]]$sim[, 11],
+                                  mod_sum_males_poor[[33]]$sim[, 11],
+                                  mod_sum_females_good[[34]]$sim[, 11],
+                                  mod_sum_females_poor[[34]]$sim[, 11],
+                                  mod_sum_males_good[[34]]$sim[, 11],
+                                  mod_sum_males_poor[[34]]$sim[, 11],
+                                  mod_sum_females_good[[35]]$sim[, 11],
+                                  mod_sum_females_poor[[35]]$sim[, 11],
+                                  mod_sum_males_good[[35]]$sim[, 11],
+                                  mod_sum_males_poor[[35]]$sim[, 11],
+                                  mod_sum_females_good[[36]]$sim[, 11],
+                                  mod_sum_females_poor[[36]]$sim[, 11],
+                                  mod_sum_males_good[[36]]$sim[, 11],
+                                  mod_sum_males_poor[[36]]$sim[, 11],
+                                  mod_sum_females_good[[37]]$sim[, 11],
+                                  mod_sum_females_poor[[37]]$sim[, 11],
+                                  mod_sum_males_good[[37]]$sim[, 11],
+                                  mod_sum_males_poor[[37]]$sim[, 11],
+                                  mod_sum_females_good[[38]]$sim[, 11],
+                                  mod_sum_females_poor[[38]]$sim[, 11],
+                                  mod_sum_males_good[[38]]$sim[, 11],
+                                  mod_sum_males_poor[[38]]$sim[, 11],
+                                  mod_sum_females_good[[39]]$sim[, 11],
+                                  mod_sum_females_poor[[39]]$sim[, 11],
+                                  mod_sum_males_good[[39]]$sim[, 11],
+                                  mod_sum_males_poor[[39]]$sim[, 11],
+                                  mod_sum_females_good[[40]]$sim[, 11],
+                                  mod_sum_females_poor[[40]]$sim[, 11],
+                                  mod_sum_males_good[[40]]$sim[, 11],
+                                  mod_sum_males_poor[[40]]$sim[, 11],
+                                  mod_sum_females_good[[41]]$sim[, 11],
+                                  mod_sum_females_poor[[41]]$sim[, 11],
+                                  mod_sum_males_good[[41]]$sim[, 11],
+                                  mod_sum_males_poor[[41]]$sim[, 11]))
+
+# Data for dementia state
+dem.data <- data.frame(sex = rep(c("Women", "Men"), each = 200, times = 41),
+                       pp = rep(c("Good Physical Function", "Poor Physical Function"), each = 100, times = 82),
+                       year = rep(seq(65, 105), each = 400),
+                       type = "Dementia",
+                       value = c(mod_sum_females_good[[1]]$sim[, 12],
+                                 mod_sum_females_poor[[1]]$sim[, 12],
+                                 mod_sum_males_good[[1]]$sim[, 12],
+                                 mod_sum_males_poor[[1]]$sim[, 12],
+                                 mod_sum_females_good[[2]]$sim[, 12],
+                                 mod_sum_females_poor[[2]]$sim[, 12],
+                                 mod_sum_males_good[[2]]$sim[, 12],
+                                 mod_sum_males_poor[[2]]$sim[, 12],
+                                 mod_sum_females_good[[3]]$sim[, 12],
+                                 mod_sum_females_poor[[3]]$sim[, 12],
+                                 mod_sum_males_good[[3]]$sim[, 12],
+                                 mod_sum_males_poor[[3]]$sim[, 12],
+                                 mod_sum_females_good[[4]]$sim[, 12],
+                                 mod_sum_females_poor[[4]]$sim[, 12],
+                                 mod_sum_males_good[[4]]$sim[, 12],
+                                 mod_sum_males_poor[[4]]$sim[, 12],
+                                 mod_sum_females_good[[5]]$sim[, 12],
+                                 mod_sum_females_poor[[5]]$sim[, 12],
+                                 mod_sum_males_good[[5]]$sim[, 12],
+                                 mod_sum_males_poor[[5]]$sim[, 12],
+                                 mod_sum_females_good[[6]]$sim[, 12],
+                                 mod_sum_females_poor[[6]]$sim[, 12],
+                                 mod_sum_males_good[[6]]$sim[, 12],
+                                 mod_sum_males_poor[[6]]$sim[, 12],
+                                 mod_sum_females_good[[7]]$sim[, 12],
+                                 mod_sum_females_poor[[7]]$sim[, 12],
+                                 mod_sum_males_good[[7]]$sim[, 12],
+                                 mod_sum_males_poor[[7]]$sim[, 12],
+                                 mod_sum_females_good[[8]]$sim[, 12],
+                                 mod_sum_females_poor[[8]]$sim[, 12],
+                                 mod_sum_males_good[[8]]$sim[, 12],
+                                 mod_sum_males_poor[[8]]$sim[, 12],
+                                 mod_sum_females_good[[9]]$sim[, 12],
+                                 mod_sum_females_poor[[9]]$sim[, 12],
+                                 mod_sum_males_good[[9]]$sim[, 12],
+                                 mod_sum_males_poor[[9]]$sim[, 12],
+                                 mod_sum_females_good[[10]]$sim[, 12],
+                                 mod_sum_females_poor[[10]]$sim[, 12],
+                                 mod_sum_males_good[[10]]$sim[, 12],
+                                 mod_sum_males_poor[[10]]$sim[, 12],
+                                 mod_sum_females_good[[11]]$sim[, 12],
+                                 mod_sum_females_poor[[11]]$sim[, 12],
+                                 mod_sum_males_good[[11]]$sim[, 12],
+                                 mod_sum_males_poor[[11]]$sim[, 12],
+                                 mod_sum_females_good[[12]]$sim[, 12],
+                                 mod_sum_females_poor[[12]]$sim[, 12],
+                                 mod_sum_males_good[[12]]$sim[, 12],
+                                 mod_sum_males_poor[[12]]$sim[, 12],
+                                 mod_sum_females_good[[13]]$sim[, 12],
+                                 mod_sum_females_poor[[13]]$sim[, 12],
+                                 mod_sum_males_good[[13]]$sim[, 12],
+                                 mod_sum_males_poor[[13]]$sim[, 12],
+                                 mod_sum_females_good[[14]]$sim[, 12],
+                                 mod_sum_females_poor[[14]]$sim[, 12],
+                                 mod_sum_males_good[[14]]$sim[, 12],
+                                 mod_sum_males_poor[[14]]$sim[, 12],
+                                 mod_sum_females_good[[15]]$sim[, 12],
+                                 mod_sum_females_poor[[15]]$sim[, 12],
+                                 mod_sum_males_good[[15]]$sim[, 12],
+                                 mod_sum_males_poor[[15]]$sim[, 12],
+                                 mod_sum_females_good[[16]]$sim[, 12],
+                                 mod_sum_females_poor[[16]]$sim[, 12],
+                                 mod_sum_males_good[[16]]$sim[, 12],
+                                 mod_sum_males_poor[[16]]$sim[, 12],
+                                 mod_sum_females_good[[17]]$sim[, 12],
+                                 mod_sum_females_poor[[17]]$sim[, 12],
+                                 mod_sum_males_good[[17]]$sim[, 12],
+                                 mod_sum_males_poor[[17]]$sim[, 12],
+                                 mod_sum_females_good[[18]]$sim[, 12],
+                                 mod_sum_females_poor[[18]]$sim[, 12],
+                                 mod_sum_males_good[[18]]$sim[, 12],
+                                 mod_sum_males_poor[[18]]$sim[, 12],
+                                 mod_sum_females_good[[19]]$sim[, 12],
+                                 mod_sum_females_poor[[19]]$sim[, 12],
+                                 mod_sum_males_good[[19]]$sim[, 12],
+                                 mod_sum_males_poor[[19]]$sim[, 12],
+                                 mod_sum_females_good[[20]]$sim[, 12],
+                                 mod_sum_females_poor[[20]]$sim[, 12],
+                                 mod_sum_males_good[[20]]$sim[, 12],
+                                 mod_sum_males_poor[[20]]$sim[, 12],
+                                 mod_sum_females_good[[21]]$sim[, 12],
+                                 mod_sum_females_poor[[21]]$sim[, 12],
+                                 mod_sum_males_good[[21]]$sim[, 12],
+                                 mod_sum_males_poor[[21]]$sim[, 12],
+                                 mod_sum_females_good[[22]]$sim[, 12],
+                                 mod_sum_females_poor[[22]]$sim[, 12],
+                                 mod_sum_males_good[[22]]$sim[, 12],
+                                 mod_sum_males_poor[[22]]$sim[, 12],
+                                 mod_sum_females_good[[23]]$sim[, 12],
+                                 mod_sum_females_poor[[23]]$sim[, 12],
+                                 mod_sum_males_good[[23]]$sim[, 12],
+                                 mod_sum_males_poor[[23]]$sim[, 12],
+                                 mod_sum_females_good[[24]]$sim[, 12],
+                                 mod_sum_females_poor[[24]]$sim[, 12],
+                                 mod_sum_males_good[[24]]$sim[, 12],
+                                 mod_sum_males_poor[[24]]$sim[, 12],
+                                 mod_sum_females_good[[25]]$sim[, 12],
+                                 mod_sum_females_poor[[25]]$sim[, 12],
+                                 mod_sum_males_good[[25]]$sim[, 12],
+                                 mod_sum_males_poor[[25]]$sim[, 12],
+                                 mod_sum_females_good[[26]]$sim[, 12],
+                                 mod_sum_females_poor[[26]]$sim[, 12],
+                                 mod_sum_males_good[[26]]$sim[, 12],
+                                 mod_sum_males_poor[[26]]$sim[, 12],
+                                 mod_sum_females_good[[27]]$sim[, 12],
+                                 mod_sum_females_poor[[27]]$sim[, 12],
+                                 mod_sum_males_good[[27]]$sim[, 12],
+                                 mod_sum_males_poor[[27]]$sim[, 12],
+                                 mod_sum_females_good[[28]]$sim[, 12],
+                                 mod_sum_females_poor[[28]]$sim[, 12],
+                                 mod_sum_males_good[[28]]$sim[, 12],
+                                 mod_sum_males_poor[[28]]$sim[, 12],
+                                 mod_sum_females_good[[29]]$sim[, 12],
+                                 mod_sum_females_poor[[29]]$sim[, 12],
+                                 mod_sum_males_good[[29]]$sim[, 12],
+                                 mod_sum_males_poor[[29]]$sim[, 12],
+                                 mod_sum_females_good[[30]]$sim[, 12],
+                                 mod_sum_females_poor[[30]]$sim[, 12],
+                                 mod_sum_males_good[[30]]$sim[, 12],
+                                 mod_sum_males_poor[[30]]$sim[, 12],
+                                 mod_sum_females_good[[31]]$sim[, 12],
+                                 mod_sum_females_poor[[31]]$sim[, 12],
+                                 mod_sum_males_good[[31]]$sim[, 12],
+                                 mod_sum_males_poor[[31]]$sim[, 12],
+                                 mod_sum_females_good[[32]]$sim[, 12],
+                                 mod_sum_females_poor[[32]]$sim[, 12],
+                                 mod_sum_males_good[[32]]$sim[, 12],
+                                 mod_sum_males_poor[[32]]$sim[, 12],
+                                 mod_sum_females_good[[33]]$sim[, 12],
+                                 mod_sum_females_poor[[33]]$sim[, 12],
+                                 mod_sum_males_good[[33]]$sim[, 12],
+                                 mod_sum_males_poor[[33]]$sim[, 12],
+                                 mod_sum_females_good[[34]]$sim[, 12],
+                                 mod_sum_females_poor[[34]]$sim[, 12],
+                                 mod_sum_males_good[[34]]$sim[, 12],
+                                 mod_sum_males_poor[[34]]$sim[, 12],
+                                 mod_sum_females_good[[35]]$sim[, 12],
+                                 mod_sum_females_poor[[35]]$sim[, 12],
+                                 mod_sum_males_good[[35]]$sim[, 12],
+                                 mod_sum_males_poor[[35]]$sim[, 12],
+                                 mod_sum_females_good[[36]]$sim[, 12],
+                                 mod_sum_females_poor[[36]]$sim[, 12],
+                                 mod_sum_males_good[[36]]$sim[, 12],
+                                 mod_sum_males_poor[[36]]$sim[, 12],
+                                 mod_sum_females_good[[37]]$sim[, 12],
+                                 mod_sum_females_poor[[37]]$sim[, 12],
+                                 mod_sum_males_good[[37]]$sim[, 12],
+                                 mod_sum_males_poor[[37]]$sim[, 12],
+                                 mod_sum_females_good[[38]]$sim[, 12],
+                                 mod_sum_females_poor[[38]]$sim[, 12],
+                                 mod_sum_males_good[[38]]$sim[, 12],
+                                 mod_sum_males_poor[[38]]$sim[, 12],
+                                 mod_sum_females_good[[39]]$sim[, 12],
+                                 mod_sum_females_poor[[39]]$sim[, 12],
+                                 mod_sum_males_good[[39]]$sim[, 12],
+                                 mod_sum_males_poor[[39]]$sim[, 12],
+                                 mod_sum_females_good[[40]]$sim[, 12],
+                                 mod_sum_females_poor[[40]]$sim[, 12],
+                                 mod_sum_males_good[[40]]$sim[, 12],
+                                 mod_sum_males_poor[[40]]$sim[, 12],
+                                 mod_sum_females_good[[41]]$sim[, 12],
+                                 mod_sum_females_poor[[41]]$sim[, 12],
+                                 mod_sum_males_good[[41]]$sim[, 12],
+                                 mod_sum_males_poor[[41]]$sim[, 12]))
+
+
+# Combining datasets
+comp.data <- free.data %>%
+  rbind(mci.data, dem.data)
+
+
+# plot!
+comp.data %>%
+  group_by(sex, pp, year, type) %>%
+  summarise(value = mean(value)) %>%
+  ungroup() %>%
+  tidyr::spread(type, value) %>% # transform long to wide format data
+  select(sex, pp, year, `Dementia-free`, MCI, Dementia) %>%
+  mutate(prop.free = (`Dementia-free` / (`Dementia-free` + MCI + Dementia)),
+         prop.mci = (MCI / (`Dementia-free` + MCI + Dementia)),
+         prop.dem = 1 - prop.free - prop.mci) %>%
+  select(sex, pp, year, prop.free, prop.mci, prop.dem) %>%
+  rename(`Dementia-free` = prop.free,
+         MCI = prop.mci,
+         Dementia = prop.dem) %>%
+  tidyr::gather(key = "type", value = "value", -c(sex, pp, year)) # reshaping data
+%>% 
+  mutate(type = factor(type,
+                       levels = c("Dementia",
+                                  "MCI",
+                                  "Dementia-free"))) %>%
+  ggplot(aes(fill = type, x = year, y = value)) +
+  geom_bar(position = "stack", stat = "identity") +
+  facet_grid(pp ~ sex) +
+  labs(x = "Age (years)",
+       y = "Proportion of Total Life Expectancy",
+       fill = "") +
+  theme_base() +
+  scale_x_continuous(breaks = seq(65, 105, 10)) +
+  scale_y_continuous(limits = seq(0, 100),
+                     labels = scales::percent_format()) +
+  theme(legend.position = "bottom")+
+  scale_fill_brewer(breaks = c("Dementia-free",
+                               "MCI",
+                               "Dementia"),
+                    palette = "Greys")
+```
+
+
+Also, we outputted the numerical data of this plot.
+
+```{r}
+# Numerical data corresponding to total LE and marginal LEs
+comp.data %>%
+  group_by(sex, pp, year, type) %>%
+  summarise(value = mean(value)) %>%
+  ungroup() %>%
+  tidyr::spread(type, value) %>%
+  select(sex, pp, year, `Dementia-free`, MCI, Dementia) %>%
+  mutate(prop.free = (`Dementia-free` / (`Dementia-free` + MCI + Dementia)) * 100,
+         prop.dem = (Dementia / (`Dementia-free` + MCI + Dementia)) * 100,
+         prop.mci = 100 - prop.free - prop.dem) %>% 
+  mutate_if(is.numeric, round, 2) %>%
+  mutate(pp = ifelse(pp == "Good Physical Function", "Good", "Poor")) %>%
+  select(sex, pp, year, `Dementia-free`, MCI, Dementia, prop.free, prop.mci, prop.dem)
+```
+
+
+State-specific life expectancy estimates. 
+
+```{r}
+# Define the index for the LE estimation you want to extract
+i <- 1 # for life expectancy free of dementia in older adults free of any cognitive condition
+# i <- 2 # for example, it would correspond with the life expectancy with MCI in older adults free of any cognitive condition
+
+# model 1 for comparison; for example, men with good physical function
+x <- mod_sum_males_good
+
+# model 2 for comparison; for example, men with poor physical function to compare good vs. poor PF in men
+y <- mod_sum_males_poor
+
+# calculation of mean differences
+males_good_males_poor <- as.data.frame(mean_qi(x[[1]]$sim[, i] - y[[1]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[2]]$sim[, i] - y[[2]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[3]]$sim[, i] - y[[3]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[4]]$sim[, i] - y[[4]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[5]]$sim[, i] - y[[5]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[6]]$sim[, i] - y[[6]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[7]]$sim[, i] - y[[7]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[8]]$sim[, i] - y[[8]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[9]]$sim[, i] - y[[9]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[10]]$sim[, i] - y[[10]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[11]]$sim[, i] - y[[11]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[12]]$sim[, i] - y[[12]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[13]]$sim[, i] - y[[13]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[14]]$sim[, i] - y[[14]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[15]]$sim[, i] - y[[15]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[16]]$sim[, i] - y[[16]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[17]]$sim[, i] - y[[17]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[18]]$sim[, i] - y[[18]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[19]]$sim[, i] - y[[19]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[20]]$sim[, i] - y[[20]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[21]]$sim[, i] - y[[21]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[22]]$sim[, i] - y[[22]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[23]]$sim[, i] - y[[23]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[24]]$sim[, i] - y[[24]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[25]]$sim[, i] - y[[25]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[26]]$sim[, i] - y[[26]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[27]]$sim[, i] - y[[27]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[28]]$sim[, i] - y[[28]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[29]]$sim[, i] - y[[29]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[30]]$sim[, i] - y[[30]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[31]]$sim[, i] - y[[31]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[32]]$sim[, i] - y[[32]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[33]]$sim[, i] - y[[33]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[34]]$sim[, i] - y[[34]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[35]]$sim[, i] - y[[35]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[36]]$sim[, i] - y[[36]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[37]]$sim[, i] - y[[37]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[38]]$sim[, i] - y[[38]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[39]]$sim[, i] - y[[39]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[40]]$sim[, i] - y[[40]]$sim[, i])[, 1:3]) %>%
+  rbind(mean_qi(x[[41]]$sim[, i] - y[[41]]$sim[, i])[, 1:3]) %>%
+  mutate_if(is.numeric, round, 2) %>%
+  cbind(year = seq(65, 105),
+        comparison = rep("Men with good PF\nvs.\nMen with poor PF"))
+
+# plot for this comparison
+males_good_males_poor %>%
+  # rbind(females_good_females_poor) %>% # just in case you want to combine men and women plots
+  # mutate(comparison = ifelse(comparison == "Women with good PF\nvs.\nWomen with poor PF", "Women", "Men")) %>%
+  ggplot(aes(x = year, y = y)) +
+  geom_pointinterval(aes(ymin = ymin,
+                         ymax = ymax)) +
+  # facet_wrap(~ comparison) +
+  labs(y = "Estimated years of life free of dementia gained with a good physical function",
+       x = "Age (years)") +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(65, 105, 10)) +
+  scale_y_continuous(breaks = seq(-7, 20, 0.5)) +
+  theme(axis.title.y = element_text(size = 9,
+                                    vjust = +3),
+        axis.title.x = element_text(vjust = -0.75))
+```
+
+
+Additionally, we computed the numerical value of these differences.
+
+```{r}
+males_good_males_poor %>%
+# rbind(females_good_females_poor, # just in case of data combination
+#        males_good_males_poor) %>% 
+   mutate(comparison = ifelse(comparison == "Women with good PF\nvs.\nWomen with poor PF", "Women", "Men"),
+         `Current state` = "Dementia",
+         `Expected number of years in this state` = "Dementia") %>%
+  dplyr::select(`Current state`, `Expected number of years in this state`,
+                comparison, year, y, ymin, ymax)
+```
+
+
