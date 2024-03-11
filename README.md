@@ -4,7 +4,7 @@ This repository serves as data bank for investigating the importance of performa
 
 Multi-state modeling was performed using the `msm` package (version 1.6.9), and the estimation of life expectancies were computed using the `elect` package (version 1.2).
 
-Regarding the `prueba_clean` data object, it is the dataset including only forward transitions (as we stated in our research based on the medical evidence of irreversible-and-progressive conditions of dementia), and older adults that completed, at least, two interviews. The variables contained in this dataset are:
+Regarding the `NHATS_data` data object, it is the dataset including only forward transitions (as we stated in our research based on the medical evidence of irreversible-and-progressive conditions of dementia), and older adults that completed, at least, two interviews. The variables contained in this dataset are:
 
   +  `id`: specific identifier for each participant in the NHATS
   +  `state`: clinical diagnosis for dementia. State 1 refers to older adults **free of dementia** (dementia-free state); state 2 refers to older adults with any **mild cognitive impairment** (MCI state); state 3 corresponds with a clinical diagnosis of **dementia**; and the state 4 corresponds with participant **death**.
