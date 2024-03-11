@@ -17,6 +17,7 @@ Regarding the `NHATS_data` data object, it is the dataset including only forward
   +  `sppb10`: whether or not the person reached 10 or more score in the Short Physical Performance Battery.
   +  `income2`: classification in low-income and high-income; whether the person earned more than 20,000$/year. 
   +  `age`: the centered age of the participants; this variable is centered subtracting the mean sample age (80.55) to the real age.
+  +  `sppb`: original score in the Short Physical Performance Battery (from 0 [the worse score] to 12 [the best score]).
 
    
 ![Fig_1_dem_HR](https://github.com/dgalgom/Dementia/assets/75797492/d340d6c0-c35a-46da-b40d-54cc402c0727)
