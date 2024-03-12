@@ -19,5 +19,7 @@ Regarding the `NHATS_data` data object, it is the dataset including only forward
   +  `age`: the centered age of the participants; this variable is centered subtracting the mean sample age (80.55) to the real age.
   +  `sppb`: original score in the Short Physical Performance Battery (from 0 [the worse score] to 12 [the best score]).
 
+
    
-![Fig_1_dem_HR](https://github.com/dgalgom/Dementia/assets/75797492/d340d6c0-c35a-46da-b40d-54cc402c0727)
+![Fig_1_dem](https://github.com/dgalgom/Dementia/assets/75797492/ca0d472a-3132-41b3-b3c1-36ac07e14b65)
+
